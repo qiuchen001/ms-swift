@@ -230,6 +230,87 @@ class MultiModalAccuracyClassificationORM(ORM):
         return rewards
 
 
+class VideoCategoryIoUReward(ORM):
+    """
+    奖励函数，要求模型输出如下格式：
+    <answer>
+    [
+      {
+        "category": "白天",
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 16.0
+      },
+      ...
+    ]
+    </answer>
+    1. 检查是否为合法JSON格式
+    2. 检查category与目标是否匹配
+    3. 匹配时计算时间区间的IoU作为奖励
+    """
+
+    def __call__(self, completions, solution, **kwargs):
+        """
+        Args:
+            completions: list[str]，模型输出
+            solution: list[str]，目标答案（同样格式）
+        Returns:
+            list[float]: 每个样本的奖励分数
+        """
+        rewards = []
+        for pred, gt in zip(completions, solution):
+            # 1. 提取<answer>标签内内容
+            match = re.search(r"<answer>\\s*(.*?)\\s*</answer>", pred, re.DOTALL)
+            if not match:
+                rewards.append(0.0)
+                continue
+            pred_json_str = match.group(1)
+            # 2. 检查是否为合法JSON
+            try:
+                pred_list = json.loads(pred_json_str)
+                assert isinstance(pred_list, list)
+            except Exception:
+                rewards.append(0.0)
+                continue
+            # 3. 解析目标
+            try:
+                gt_list = json.loads(gt) if isinstance(gt, str) else gt
+                assert isinstance(gt_list, list)
+            except Exception:
+                rewards.append(0.0)
+                continue
+
+            # 4. category匹配与IoU奖励
+            total_reward = 0.0
+            match_count = 0
+            for gt_item in gt_list:
+                gt_cat = gt_item["category"]
+                gt_start = float(gt_item["start_time_seconds"])
+                gt_end = float(gt_item["end_time_seconds"])
+                # 找到所有预测中同类category
+                pred_items = [item for item in pred_list if item.get("category") == gt_cat]
+                if not pred_items:
+                    continue
+                # 计算IoU，取最大IoU
+                best_iou = 0.0
+                for pred_item in pred_items:
+                    try:
+                        p_start = float(pred_item["start_time_seconds"])
+                        p_end = float(pred_item["end_time_seconds"])
+                        inter = max(0.0, min(gt_end, p_end) - max(gt_start, p_start))
+                        union = max(gt_end, p_end) - min(gt_start, p_start)
+                        iou = inter / union if union > 0 else 0.0
+                        if iou > best_iou:
+                            best_iou = iou
+                    except Exception:
+                        continue
+                total_reward += best_iou
+                match_count += 1
+            # 平均IoU作为奖励（如果没有匹配则为0）
+            reward = total_reward / match_count if match_count > 0 else 0.0
+            rewards.append(reward)
+        return rewards
+
+
 # ref implementation: https://github.com/huggingface/open-r1/blob/main/src/open_r1/rewards.py
 class CodeReward(ORM):
 
@@ -751,7 +832,9 @@ orms['external_math_acc'] = MathAccuracy
 orms['external_math_format'] = MathFormat
 orms['external_countdown'] = CountdownORM
 orms['external_r1v_acc'] = MultiModalAccuracyORM
+orms['external_code_reward'] = CodeReward
 orms['external_r1v_acc_classification'] = MultiModalAccuracyClassificationORM
+orms['external_video_category_iou'] = VideoCategoryIoUReward
 orms['external_code_format'] = CodeFormat
 orms['external_code_reward_by_judge0'] = CodeRewardByJudge0
 orms['external_tooluse_format_reward'] = ToolUseFormatReward
@@ -943,88 +1026,6 @@ class ReToolScheduler(MultiTurnScheduler):
 multi_turns['retool'] = ReToolScheduler
 
 
-class VideoCategoryIoUReward(ORM):
-    """
-    奖励函数，要求模型输出如下格式：
-    <answer>
-    [
-      {
-        "category": "白天",
-        "start_time_seconds": 0.0,
-        "end_time_seconds": 16.0
-      },
-      ...
-    ]
-    </answer>
-    1. 检查是否为合法JSON格式
-    2. 检查category与目标是否匹配
-    3. 匹配时计算时间区间的IoU作为奖励
-    """
-
-    def __call__(self, completions, solution, **kwargs):
-        """
-        Args:
-            completions: list[str]，模型输出
-            solution: list[str]，目标答案（同样格式）
-        Returns:
-            list[float]: 每个样本的奖励分数
-        """
-        rewards = []
-        for pred, gt in zip(completions, solution):
-            # 1. 提取<answer>标签内内容
-            match = re.search(r"<answer>\\s*(.*?)\\s*</answer>", pred, re.DOTALL)
-            if not match:
-                rewards.append(0.0)
-                continue
-            pred_json_str = match.group(1)
-            # 2. 检查是否为合法JSON
-            try:
-                pred_list = json.loads(pred_json_str)
-                assert isinstance(pred_list, list)
-            except Exception:
-                rewards.append(0.0)
-                continue
-            # 3. 解析目标
-            try:
-                gt_list = json.loads(gt) if isinstance(gt, str) else gt
-                assert isinstance(gt_list, list)
-            except Exception:
-                rewards.append(0.0)
-                continue
-
-            # 4. category匹配与IoU奖励
-            total_reward = 0.0
-            match_count = 0
-            for gt_item in gt_list:
-                gt_cat = gt_item["category"]
-                gt_start = float(gt_item["start_time_seconds"])
-                gt_end = float(gt_item["end_time_seconds"])
-                # 找到所有预测中同类category
-                pred_items = [item for item in pred_list if item.get("category") == gt_cat]
-                if not pred_items:
-                    continue
-                # 计算IoU，取最大IoU
-                best_iou = 0.0
-                for pred_item in pred_items:
-                    try:
-                        p_start = float(pred_item["start_time_seconds"])
-                        p_end = float(pred_item["end_time_seconds"])
-                        inter = max(0.0, min(gt_end, p_end) - max(gt_start, p_start))
-                        union = max(gt_end, p_end) - min(gt_start, p_start)
-                        iou = inter / union if union > 0 else 0.0
-                        if iou > best_iou:
-                            best_iou = iou
-                    except Exception:
-                        continue
-                total_reward += best_iou
-                match_count += 1
-            # 平均IoU作为奖励（如果没有匹配则为0）
-            reward = total_reward / match_count if match_count > 0 else 0.0
-            rewards.append(reward)
-        return rewards
-
-# 注册到 orms
-orms['external_video_category_iou'] = VideoCategoryIoUReward
 # register GYM env
 class CustomEnv(Env):
     pass
