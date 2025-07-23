@@ -88,6 +88,7 @@ class Template(ProcessorMixin):
         self._processor_inited = False
         self._version = 'v1'  # Avoid compatibility issues caused by load_from_cache_file caching.
         self.max_length = max_length
+        self.model = None
 
         if not use_chat_template:
             template_meta = template_meta.to_generate_template_meta()
@@ -238,32 +239,32 @@ class Template(ProcessorMixin):
         if self.model_meta.is_multimodal:
             self._replace_image_tags(inputs)
             self._replace_start_image_tags(inputs)
-        images = inputs.images
-        load_images = self.load_images or self.mode in {'vllm', 'lmdeploy'}
-        load_images_origin = load_images
-        if self.max_pixels is not None or inputs.objects:
-            load_images = True
-        if images:
-            for i, image in enumerate(images):
-                images[i] = self._load_image(images[i], load_images)
-        if inputs.objects:
-            self._get_height_width(inputs)
-        if self.max_pixels is not None:
-            # Scale the image proportionally without affecting the scaled objects.
-            images = [rescale_image(img, self.max_pixels) for img in images]
-        if images and not load_images_origin:  # fix pt & qwen-vl
-            for i, image in enumerate(images):
-                if isinstance(image, Image.Image):
-                    images[i] = self._save_pil_image(image)
-        inputs.images = images
+
+        for img_field in ['images', 'rejected_images']:
+            images = getattr(inputs, img_field, None)
+            if not images:
+                continue
+            load_images = self.load_images or self.mode in {'vllm', 'lmdeploy'}
+            load_images_origin = load_images
+            if self.max_pixels is not None or inputs.objects:
+                load_images = True
+            if images:
+                for i, image in enumerate(images):
+                    images[i] = self._load_image(image, load_images)
+            if inputs.objects:
+                self._get_height_width(inputs)
+            if self.max_pixels is not None and images:
+                images = [rescale_image(img, self.max_pixels) for img in images]
+            if images and not load_images_origin:  # fix pt & qwen-vl
+                for i, image in enumerate(images):
+                    if isinstance(image, Image.Image):
+                        images[i] = self._save_pil_image(image)
+            setattr(inputs, img_field, images)
 
         if self.mode == 'vllm' and inputs.audios:
             sampling_rate = get_env_args('sampling_rate', int, None)
             inputs.audios = load_batch(
                 inputs.audios, load_func=partial(load_audio, sampling_rate=sampling_rate, return_sr=True))
-
-        if inputs.is_multimodal:
-            self._add_default_tags(inputs)
 
     @staticmethod
     def _replace_image_tags(inputs: StdTemplateInputs):
@@ -336,8 +337,12 @@ class Template(ProcessorMixin):
     def _rlhf_encode(self, inputs: StdTemplateInputs) -> Dict[str, Any]:
         margin = inputs.margin
         chosen_inputs, rejected_inputs = inputs, deepcopy(inputs)
-        assert chosen_inputs.rejected_response is not None, f'inputs: {inputs}'
-        rejected_inputs.messages[-1]['content'] = chosen_inputs.rejected_response
+
+        assert chosen_inputs.rejected_response or chosen_inputs.rejected_images, f'inputs: {inputs}'
+        if chosen_inputs.rejected_response:
+            rejected_inputs.messages[-1]['content'] = chosen_inputs.rejected_response
+        if chosen_inputs.rejected_images:
+            rejected_inputs.images = chosen_inputs.rejected_images
         chosen_encoded = self._encode_truncated(chosen_inputs)
         rejected_encoded = self._encode_truncated(rejected_inputs)
 
@@ -1145,7 +1150,10 @@ class Template(ProcessorMixin):
             answer_len = 0
         return res_context_list, loss_scale_list, answer_len
 
-    def _encode_truncated(self, inputs):
+    def _encode_truncated(self, inputs: StdTemplateInputs):
+        if inputs.is_multimodal:
+            self._add_default_tags(inputs)
+
         if self.mode in {'vllm', 'lmdeploy', 'sglang'}:
             encoded = Template._encode(self, inputs)
             for key in ['images', 'audios', 'videos']:
@@ -1235,12 +1243,11 @@ class Template(ProcessorMixin):
         encoded['loss_scale'] = loss_scale
         if self.use_megatron:
             self._handle_megatron_cp(encoded)
-            encoded['labels'] = encoded['labels'][1:] + [-100]
-            if encoded.get('loss_scale') is not None:
-                encoded['loss_scale'] = encoded['loss_scale'][1:] + [0]
             encoded['position_ids'] = list(range(len(encoded['labels'])))
-        elif encoded.get('labels') is not None:
+        if encoded.get('labels') is not None:
             encoded['labels'][0] = -100
+        if encoded.get('loss_scale') is not None:
+            encoded['loss_scale'][0] = 0
         if not self.is_training:
             for k in list(encoded.keys()):
                 if k.endswith('labels') or k.endswith('loss_scale'):
@@ -1255,7 +1262,7 @@ class Template(ProcessorMixin):
         padding_len = math.ceil(len(input_ids) / (cp_size * 2)) * (cp_size * 2) - len(input_ids)
         input_ids += [self.tokenizer.pad_token_id] * padding_len
         encoded['labels'] += [-100] * padding_len
-        if 'loss_scale' in encoded:
+        if encoded.get('loss_scale') is not None:
             encoded['loss_scale'] += [0] * padding_len
 
     def debug_logger(self, inputs):
@@ -1568,13 +1575,12 @@ class Template(ProcessorMixin):
         assert self.tokenizer.pad_token_id is not None
         padding_side = self.padding_side if self.is_training else 'left'
         padding_right = padding_side == 'right'
-        packing_mode = self.use_megatron or self._packing
         if self.padding_free:
             batch[:] = self._data_flatten(batch)
         if self._packing:
             assert 'position_ids' in batch[0], f'batch[0]: {batch[0]}'
         res = {}
-        if packing_mode:
+        if self._packing:
             # only support llm
             for k in ['input_ids', 'labels', 'position_ids', 'loss_scale', 'channel']:
                 v = self.gather_list(batch, k)
@@ -1617,26 +1623,31 @@ class Template(ProcessorMixin):
                 res[key][i] = val
             if not seq_lens:
                 seq_lens = [seq.shape[0] for seq in res[key]]
-        if not packing_mode and seq_lens and ('input_ids' in res or 'inputs_embeds' in res):
-            res['attention_mask'] = [torch.ones(seq_len, dtype=torch.int64) for seq_len in seq_lens]
+        if not self._packing and seq_lens and ('input_ids' in res or 'inputs_embeds' in res):
+            if not self.use_megatron:
+                res['attention_mask'] = [torch.ones(seq_len, dtype=torch.int64) for seq_len in seq_lens]
             if self.is_training and self.padding_side == 'left':
                 res['position_ids'] = [torch.arange(seq_len, dtype=torch.int64) for seq_len in seq_lens]
 
         if self.use_megatron:
-            padding_to = math.ceil(max(seq_lens) / 128) * 128
-            cp_size = self.sequence_parallel_size
-            if cp_size > 1:
-                padding_len = padding_to - seq_lens[0]
-                position_ids = res['position_ids'][0].tolist()
-                position_ids += list(range(cp_size * 2)) * (padding_len // (cp_size * 2))
-                res['position_ids'][0] = torch.tensor(position_ids)
+            if self._packing:
+                if padding_to is not None:
+                    padding_to = math.ceil(max(seq_lens) / padding_to) * padding_to
+            else:
+                padding_to = math.ceil(max(seq_lens) / 64) * 64
+                res['attention_mask'] = torch.tril(
+                    torch.ones((len(seq_lens), padding_to, padding_to),
+                               dtype=torch.bool)).view(len(seq_lens), 1, padding_to, padding_to)
+                assert res['attention_mask'].dtype is torch.bool, f'attention_mask.dtype: {res["attention_mask"].dtype}'
+                for i, seq_len in enumerate(seq_lens):
+                    res['attention_mask'][i, :, seq_len:] = 0
 
         for key, pad_value in zip(keys, pad_values):
             if key not in res:
                 continue
-            if self.use_megatron and key == 'position_ids' and self.sequence_parallel_size > 1:
-                pass
-            elif padding_to is not None:
+            if self.use_megatron and not self._packing and key == 'attention_mask':
+                continue
+            if padding_to is not None:
                 padding_len = padding_to - seq_lens[0]
                 if padding_len > 0:
                     res[key][0] = F.pad(res[key][0], (0, padding_len) if padding_right else (padding_len, 0),

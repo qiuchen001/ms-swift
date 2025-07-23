@@ -9,9 +9,12 @@ SWIFT引入了Megatron的并行技术来加速大模型的训练，包括数据�
 ```shell
 # 推荐torch版本：2.5 / 2.6
 pip install pybind11
+
 # transformer_engine
 # 若出现安装错误，可以参考该issue解决: https://github.com/modelscope/ms-swift/issues/3793
-pip install git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.3
+pip install --no-build-isolation transformer_engine[pytorch]
+# 若以上命令报错也可以使用以下方式安装
+# pip install git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.3
 
 # apex
 git clone https://github.com/NVIDIA/apex
@@ -21,10 +24,10 @@ git checkout e13873debc4699d39c6861074b9a3b2a02327f92
 pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --config-settings "--build-option=--cpp_ext" --config-settings "--build-option=--cuda_ext" ./
 
 # megatron-core
-# "ms-swift<3.7"请使用core_r0.12.0分支
 pip install git+https://github.com/NVIDIA/Megatron-LM.git@core_r0.13.0
 
 # 若使用多机训练，请额外设置`MODELSCOPE_CACHE`环境变量为共享存储路径
+# 这将确保数据集缓存共享，而加速预处理速度
 expert MODELSCOPE_CACHE='/xxx/shared'
 ```
 
@@ -43,7 +46,7 @@ modelscope-registry.us-west-1.cr.aliyuncs.com/modelscope-repo/modelscope:ubuntu2
 这里介绍使用2卡80GiB A100对Qwen2.5-7B-Instruct模型进行自我认知微调的快速入门案例，以下最佳实践可以在10分钟内完成。
 
 首先，我们需要将HF格式的权重转为Megatron格式：
-- 若出现OOM，将`CUDA_VISIBLE_DEVICES=0`删除即可。
+- 若出现OOM，将`CUDA_VISIBLE_DEVICES=0`删除即可，会自动使用多卡。若出现内存不足，请将`--test_convert_precision true`删除。
 ```shell
 CUDA_VISIBLE_DEVICES=0 \
 swift export \
@@ -92,7 +95,7 @@ megatron sft \
 
 最后，将Megatron格式权重转为HF格式：
 - 注意：`--mcore_model`请指向`iter_xxx`的上级目录。默认会使用`latest_checkpointed_iteration.txt`中对应的checkpoint。
-- 若出现OOM，将`CUDA_VISIBLE_DEVICES=0`删除即可。
+- 若出现OOM，将`CUDA_VISIBLE_DEVICES=0`删除即可。若出现内存不足，请将`--test_convert_precision true`删除。
 ```shell
 CUDA_VISIBLE_DEVICES=0 \
 swift export \
@@ -196,8 +199,8 @@ swift export \
 
 |          | Megatron-LM | Deepspeed-ZeRO2 | Deepspeed-ZeRO3 |
 | -------- | ----------- | ---------- | ---------- |
-| 训练速度 |      2.93s/it       |  6.02s/it   | 24.30s/it |
-| 显存占用 | 8\*66GB     |  8\*72GB   | 8\*50GB |
+| 训练速度 |      2.95s/it       |  6.02s/it   | 24.30s/it |
+| 显存占用 | 8\*57GB     |  8\*72GB   | 8\*50GB |
 
 
 ## 命令行参数
@@ -230,6 +233,7 @@ swift export \
 - 🔥cross_entropy_loss_fusion: 启动交叉熵损失计算融合。默认为False。
 - cross_entropy_fusion_impl: 交叉熵损失融合的实现。可选为'native'和'te'。默认为'native'。
 - calculate_per_token_loss: 根据全局批次中的非填充token数量来对交叉熵损失进行缩放。默认为True。
+  - 注意：rlhf中默认为False。
 - 🔥attention_backend: 使用的注意力后端 (flash、fused、unfused、local、auto)。默认为 auto。
 - optimizer: 优化器类型，可选为'adam'、'sgd'。默认为adam。
 - 🔥optimizer_cpu_offload: 将优化器状态卸载到 CPU。默认为False。
@@ -247,7 +251,6 @@ swift export \
   - 注意：若设置`--streaming true`，则设置为1。
 - seq_length: 默认为None，即设置为`max_length`。对数据集长度进行限制请使用基本参数中的`--max_length`控制，无需设置此参数。
 - use_cpu_initialization: 在cpu上初始化权重，默认为False。在进行HF和MCore权重转换时会被使用。
-- no_create_attention_mask_in_dataloader: 在dataloader中不创建attention mask，默认为True。
 - extra_megatron_kwargs: 传入megatron的其他参数，使用json传递。默认为None。
 
 **学习率参数**:
@@ -294,8 +297,8 @@ swift export \
 - 🔥sequence_parallel: 启动序列并行的优化器。默认为False。
 - 🔥context_parallel_size: cp数，默认为1。
 - tp_comm_overlap: 启用张量并行通信与GEMM（通用矩阵乘法）内核的重叠（降低通信耗时）。默认为False。
-- overlap_grad_reduce: 启用DDP中grad reduce操作的重叠（降低DP通信耗时）。默认为False。
-- overlap_param_gather: 启用分布式优化器中参数all-gather的重叠（降低DP通信耗时）。默认为False。
+- 🔥overlap_grad_reduce: 启用DDP中grad reduce操作的重叠（降低DP通信耗时）。默认为False。
+- 🔥overlap_param_gather: 启用分布式优化器中参数all-gather的重叠（降低DP通信耗时）。默认为False。
 - distributed_timeout_minutes: torch.distributed的timeout时间（单位为分钟），该参数失效，使用[基础参数](./命令行参数.md#基本参数)中的ddp_timeout控制，默认为300000分钟。
 
 **日志参数**:
@@ -399,7 +402,7 @@ swift export \
 - trainable_parameters_regex: 匹配额外可训练参数的正则表达式，默认为None。
 
 lora训练：
-- adapter_load: 加载adapter的权重路径，默认为None。
+- adapter_load: 加载adapter的权重路径，用于lora断点续训，默认为None。lora断点续训方式与全参数一致，请关注`--finetune`参数的含义。
 - 🔥target_modules: 指定lora模块的后缀, 默认为`['all-linear']`。
 - 🔥target_regex: 指定lora模块的regex表达式，默认为`None`。如果该值传入，则target_modules参数失效。
 - 🔥modules_to_save: 在已附加tuner后，额外指定一部分原模型模块参与训练和存储。默认为`[]`。
@@ -425,8 +428,12 @@ lora训练：
 Megatron训练参数继承自Megatron参数和基本参数。基本参数的内容可以参考[这里](./命令行参数.md#基本参数)。此外还包括以下参数：
 
 - add_version: 在`save`上额外增加目录`'<版本号>-<时间戳>'`防止权重覆盖，默认为True。
+- padding_free: 将一个batch中的数据进行展平而避免数据padding，从而降低显存占用并加快训练。默认为True。
+  - 若要自定义attention_mask，你可以设置`--padding_free false`。
+- mlp_padding_free: 默认为None，若padding_free为True，则默认为False；否则，默认为True。用于padding_free设置为false时，对mlp进行padding_free优化。这可以在自定义attention_mask的同时，提升训练速度和减少显存占用。
 - 🔥packing: 是否使用序列packing，默认为False。当前支持`megatron pt/sft`。
-- 🔥packing_cache: 指定 packing 缓存目录。默认值为`None`，表示缓存将存储在环境变量 `$MODELSCOPE_CACHE`所指定的路径下。在跨节点使用 packing 功能时，需确保所有节点的 packing 缓存路径共享且一致。你可以通过设置`MODELSCOPE_CACHE`环境变量，或在命令行中添加 `--packing_cache <shared_path>`参数来实现这一要求。
+- packing_cache: 指定 packing 缓存目录。默认值为`None`，表示缓存将存储在环境变量 `$MODELSCOPE_CACHE`所指定的路径下。在跨节点使用 packing 功能时，需确保所有节点的 packing 缓存路径共享且一致。你可以通过设置`MODELSCOPE_CACHE`环境变量，或在命令行中添加 `--packing_cache <shared_path>`参数来实现这一要求。
+  - 注意：该参数将在"ms-swift>=3.7"被移除。多机packing不再需要设置packing_cache。
 - 🔥streaming: 流式读取并处理数据集，默认False。通常在处理大型数据集时，设置为True。更多流式的参数查看命令行参数文档。
 - lazy_tokenize: 默认为False。若该参数设置为False，则在训练之前对所有的数据集样本进行tokenize（这可以避免在训练中出现报错）；设置为True，则在训练中对数据集进行tokenize（这可以节约内存）。
 - max_epochs: 训练到`max_epochs`时强制退出训练，并对权重进行验证和保存。该参数在使用流式数据集时很有用。默认为None。
