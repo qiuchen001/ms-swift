@@ -576,6 +576,7 @@ def patch_qwen_vl_utils(vision_process):
 
     def _new_read_video_decord(ele: dict):
         from swift.llm import load_file
+        logger.info(f"decord: origin_video_path={ele['video']}")
         ele['video'] = load_file(ele['video'])
         return _read_video_decord(ele)
 
