@@ -232,8 +232,8 @@ class MultiModalAccuracyClassificationORM(ORM):
 
 class VideoCategoryIoUReward(ORM):
     """
-    奖励函数，要求模型输出如下格式：
-    <answer>
+    奖励函数，处理的模型输出和目标答案格式为 ```json``` 代码块：
+    ```json
     [
       {
         "category": "白天",
@@ -242,10 +242,11 @@ class VideoCategoryIoUReward(ORM):
       },
       ...
     ]
-    </answer>
-    1. 检查是否为合法JSON格式
-    2. 检查category与目标是否匹配
-    3. 匹配时计算时间区间的IoU作为奖励
+    ```
+    1. 从代码块中提取JSON内容
+    2. 检查是否为合法JSON格式
+    3. 检查category与目标是否匹配
+    4. 匹配时计算时间区间的IoU作为奖励
     """
 
     def __call__(self, completions, solution, **kwargs):
@@ -256,10 +257,13 @@ class VideoCategoryIoUReward(ORM):
         Returns:
             list[float]: 每个样本的奖励分数
         """
+        logger.info(f"VideoCategoryIoUReward completions: {completions}")
+        logger.info(f"VideoCategoryIoUReward solution: {solution}")
+
         rewards = []
         for pred, gt in zip(completions, solution):
-            # 1. 提取<answer>标签内内容
-            match = re.search(r"<answer>\\s*(.*?)\\s*</answer>", pred, re.DOTALL)
+            # 1. 提取```json```代码块中的内容
+            match = re.search(r"```json\s*([\s\S]*?)\s*```", pred, re.DOTALL)
             if not match:
                 rewards.append(0.0)
                 continue
@@ -271,9 +275,14 @@ class VideoCategoryIoUReward(ORM):
             except Exception:
                 rewards.append(0.0)
                 continue
-            # 3. 解析目标
+            # 3. 解析目标，提取```json```代码块中的内容
             try:
-                gt_list = json.loads(gt) if isinstance(gt, str) else gt
+                gt_match = re.search(r"```json\s*([\s\S]*?)\s*```", gt, re.DOTALL)
+                if not gt_match:
+                    rewards.append(0.0)
+                    continue
+                gt_json_str = gt_match.group(1)
+                gt_list = json.loads(gt_json_str)
                 assert isinstance(gt_list, list)
             except Exception:
                 rewards.append(0.0)
