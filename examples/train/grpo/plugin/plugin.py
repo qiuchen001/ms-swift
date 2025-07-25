@@ -197,6 +197,10 @@ class MultiModalAccuracyClassificationORM(ORM):
         Returns:
             list[float]: Reward scores
         """
+
+        logger.info(f"MultiModalAccuracyClassificationORM completions: {completions}")
+        logger.info(f"MultiModalAccuracyClassificationORM solution: {solution}")
+
         rewards = []
         from math_verify import parse, verify
         for content, sol in zip(completions, solution):
@@ -477,8 +481,8 @@ class VideoCategoryIoUReward_v3(ORM):
             list[float]: 每个样本的奖励分数
         """
 
-        logger.info(f"VideoCategoryIoUReward_v4 completions: {completions}")
-        logger.info(f"VideoCategoryIoUReward_v4 solution: {solution}")
+        logger.info(f"VideoCategoryIoUReward_v3 completions: {completions}")
+        logger.info(f"VideoCategoryIoUReward_v3 solution: {solution}")
 
         rewards = []
         for pred, gt in zip(completions, solution):
