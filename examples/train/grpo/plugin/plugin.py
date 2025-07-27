@@ -185,6 +185,477 @@ class MultiModalAccuracyORM(ORM):
         return rewards
 
 
+class MultiModalAccuracyClassificationORM(ORM):
+
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        """
+        Reward function that checks if the completion is correct.
+        Args:
+            completions (list[str]): Generated outputs
+            solution (list[str]): Ground Truths.
+
+        Returns:
+            list[float]: Reward scores
+        """
+
+        logger.info(f"MultiModalAccuracyClassificationORM completions: {completions}")
+        logger.info(f"MultiModalAccuracyClassificationORM solution: {solution}")
+
+        rewards = []
+        from math_verify import parse, verify
+        for content, sol in zip(completions, solution):
+            reward = 0.0
+            # Try symbolic verification first
+            try:
+                answer = parse(content)
+                if float(verify(answer, parse(sol))) > 0:
+                    reward = 1.0
+            except Exception:
+                pass  # Continue to next verification method if this fails
+
+            # If symbolic verification failed, try string matching
+            if reward == 0.0:
+                try:
+                    # Extract answer from solution if it has think/answer tags
+                    sol_match = re.search(r'<answer>(.*?)</answer>', sol)
+                    ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
+
+                    # Extract answer from content if it has think/answer tags
+                    content_match = re.search(r'<answer>(.*?)</answer>', content)
+                    student_answer = content_match.group(1).strip() if content_match else content.strip()
+
+                    # Compare the extracted answers
+                    # 比较第一个字符是否相同（同时确保字符串非空）
+                    if student_answer and ground_truth and student_answer[0] == ground_truth[0]:
+                        reward = 1.0
+                except Exception:
+                    pass  # Keep reward as 0.0 if both methods fail
+            rewards.append(reward)
+        return rewards
+
+
+class VideoCategoryIoUReward(ORM):
+    """
+    奖励函数，处理的模型输出和目标答案格式为 ```json``` 代码块：
+    ```json
+    [
+      {
+        "category": "白天",
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 16.0
+      },
+      ...
+    ]
+    ```
+    1. 从代码块中提取JSON内容
+    2. 检查是否为合法JSON格式
+    3. 检查category与目标是否匹配
+    4. 匹配时计算时间区间的IoU作为奖励
+    """
+
+    def __call__(self, completions, solution, **kwargs):
+        """
+        Args:
+            completions: list[str]，模型输出
+            solution: list[str]，目标答案（同样格式）
+        Returns:
+            list[float]: 每个样本的奖励分数
+        """
+        logger.info(f"VideoCategoryIoUReward completions: {completions}")
+        logger.info(f"VideoCategoryIoUReward solution: {solution}")
+
+        rewards = []
+        for pred, gt in zip(completions, solution):
+            # 1. 提取```json```代码块中的内容
+            match = re.search(r"```json\s*([\s\S]*?)\s*```", pred, re.DOTALL)
+            if not match:
+                rewards.append(0.0)
+                continue
+            pred_json_str = match.group(1)
+            # 2. 检查是否为合法JSON
+            try:
+                pred_list = json.loads(pred_json_str)
+                assert isinstance(pred_list, list)
+            except Exception:
+                rewards.append(0.0)
+                continue
+            # 3. 解析目标，提取```json```代码块中的内容
+            try:
+                gt_match = re.search(r"```json\s*([\s\S]*?)\s*```", gt, re.DOTALL)
+                if not gt_match:
+                    rewards.append(0.0)
+                    continue
+                gt_json_str = gt_match.group(1)
+                gt_list = json.loads(gt_json_str)
+                assert isinstance(gt_list, list)
+            except Exception:
+                rewards.append(0.0)
+                continue
+
+            # 4. category匹配与IoU奖励
+            total_reward = 0.0
+            match_count = 0
+            for gt_item in gt_list:
+                gt_cat = gt_item["category"]
+                gt_start = float(gt_item["start_time_seconds"])
+                gt_end = float(gt_item["end_time_seconds"])
+                # 找到所有预测中同类category
+                pred_items = [item for item in pred_list if item.get("category") == gt_cat]
+                if not pred_items:
+                    continue
+                # 计算IoU，取最大IoU
+                best_iou = 0.0
+                for pred_item in pred_items:
+                    try:
+                        p_start = float(pred_item["start_time_seconds"])
+                        p_end = float(pred_item["end_time_seconds"])
+                        inter = max(0.0, min(gt_end, p_end) - max(gt_start, p_start))
+                        union = max(gt_end, p_end) - min(gt_start, p_start)
+                        iou = inter / union if union > 0 else 0.0
+                        if iou > best_iou:
+                            best_iou = iou
+                    except Exception:
+                        continue
+                total_reward += best_iou
+                match_count += 1
+            # 平均IoU作为奖励（如果没有匹配则为0）
+            reward = total_reward / match_count if match_count > 0 else 0.0
+            rewards.append(reward)
+        return rewards
+
+
+class VideoCategoryIoUReward_v2(ORM):
+    """
+    奖励函数，处理的模型输出和目标答案格式为 ```json``` 代码块：
+    ```json
+    [
+      {
+        "category": "白天",
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 16.0
+      },
+      ...
+    ]
+    ```
+    1. 从代码块中提取JSON内容
+    2. 检查是否为合法JSON格式
+    3. 检查category与目标是否匹配
+    4. 匹配时计算时间区间的IoU作为奖励
+    """
+
+    def __call__(self, completions, solution, **kwargs):
+        """
+        Args:
+            completions: list[str]，模型输出
+            solution: list[str]，目标答案（同样格式）
+        Returns:
+            list[float]: 每个样本的奖励分数
+        """
+
+        logger.info(f"VideoCategoryIoUReward completions: {completions}")
+        logger.info(f"VideoCategoryIoUReward solution: {solution}")
+
+        rewards = []
+        for pred, gt in zip(completions, solution):
+            # 1. 提取```json```代码块中的内容
+            match = re.search(r"```json\s*([\s\S]*?)\s*```", pred, re.DOTALL)
+            if not match:
+                rewards.append(0.0)
+                continue
+            pred_json_str = match.group(1)
+            # 2. 检查是否为合法JSON
+            try:
+                pred_list = json.loads(pred_json_str)
+                assert isinstance(pred_list, list)
+            except Exception:
+                rewards.append(0.0)
+                continue
+            # 3. 解析目标，提取```json```代码块中的内容
+            try:
+                gt_match = re.search(r"```json\s*([\s\S]*?)\s*```", gt, re.DOTALL)
+                if not gt_match:
+                    rewards.append(0.0)
+                    continue
+                gt_json_str = gt_match.group(1)
+                gt_list = json.loads(gt_json_str)
+                assert isinstance(gt_list, list)
+            except Exception:
+                rewards.append(0.0)
+                continue
+
+            # 4. 优化后的奖励计算逻辑：同分类多时间段一一最优配对
+            total_iou_reward = 0.0
+            matched_gt_count = 0
+            matched_pred_indices = set()
+            matched_gt_indices = set()
+
+            # 按分类分组
+            from collections import defaultdict
+            gt_by_cat = defaultdict(list)
+            pred_by_cat = defaultdict(list)
+            for idx, item in enumerate(gt_list):
+                gt_by_cat[item["category"]].append((idx, item))
+            for idx, item in enumerate(pred_list):
+                pred_by_cat[item.get("category")].append((idx, item))
+
+            for cat in gt_by_cat:
+                gt_items = gt_by_cat[cat]
+                pred_items = pred_by_cat.get(cat, [])
+                # 构建IoU矩阵
+                iou_matrix = []
+                for gt_idx, gt_item in gt_items:
+                    row = []
+                    gt_start = float(gt_item["start_time_seconds"])
+                    gt_end = float(gt_item["end_time_seconds"])
+                    for pred_idx, pred_item in pred_items:
+                        try:
+                            p_start = float(pred_item["start_time_seconds"])
+                            p_end = float(pred_item["end_time_seconds"])
+                            inter = max(0.0, min(gt_end, p_end) - max(gt_start, p_start))
+                            union = max(gt_end, p_end) - min(gt_start, p_start)
+                            iou = inter / union if union > 0 else 0.0
+                        except Exception:
+                            iou = 0.0
+                        row.append((iou, gt_idx, pred_idx))
+                    iou_matrix.append(row)
+                # 贪心配对：每次选最大IoU且未被配对的
+                pairs = []
+                used_gt = set()
+                used_pred = set()
+                all_pairs = []
+                for row in iou_matrix:
+                    all_pairs.extend(row)
+                all_pairs.sort(reverse=True, key=lambda x: x[0])  # 按IoU降序
+                for iou, gt_idx, pred_idx in all_pairs:
+                    if iou == 0.0:
+                        continue
+                    if gt_idx in used_gt or pred_idx in used_pred:
+                        continue
+                    pairs.append((gt_idx, pred_idx, iou))
+                    used_gt.add(gt_idx)
+                    used_pred.add(pred_idx)
+                # 统计配对
+                total_iou_reward += sum(iou for _, _, iou in pairs)
+                matched_gt_count += len(pairs)
+                matched_gt_indices.update(gt_idx for gt_idx, _, _ in pairs)
+                matched_pred_indices.update(pred_idx for _, pred_idx, _ in pairs)
+
+            # 平均IoU作为基础奖励（如果没有匹配则为0）
+            avg_iou_reward = total_iou_reward / len(gt_list) if gt_list else 0.0
+
+            # 4.2 计算漏报惩罚 (False Negative)
+            # 新逻辑：只要预测中有同分类，无论时间段是否重叠，都不算漏报
+            fn_count = 0
+            for cat in gt_by_cat:
+                if not pred_by_cat.get(cat):
+                    # 预测中没有该分类，才算漏报（该分类下所有gt item都算漏报）
+                    fn_count += len(gt_by_cat[cat])
+            fn_penalty = fn_count * 0.1
+
+            # 4.3 计算误报惩罚 (False Positive)
+            fp_count = len(pred_list) - len(matched_pred_indices)
+            fp_penalty = fp_count * 0.1
+
+            # 4.4 组合最终奖励
+            final_reward = avg_iou_reward - fn_penalty - fp_penalty
+            # final_reward = max(0.0, final_reward)
+            rewards.append(final_reward)
+        return rewards
+
+
+class VideoCategoryIoUReward_v3(ORM):
+    """
+    改进的奖励函数，解决以下问题：
+    1. 分离格式验证和内容评估
+    2. 增强惩罚力度
+    3. 确保奖励始终为正
+    4. 添加更详细的调试信息
+    """
+
+    def __call__(self, completions, solution, **kwargs):
+        """
+        Args:
+            completions: list[str]，模型输出
+            solution: list[str]，目标答案
+        Returns:
+            list[float]: 每个样本的奖励分数
+        """
+
+        logger.info(f"VideoCategoryIoUReward_v3 completions: {completions}")
+        logger.info(f"VideoCategoryIoUReward_v3 solution: {solution}")
+
+        rewards = []
+        for pred, gt in zip(completions, solution):
+            reward = self._calculate_reward(pred, gt)
+            rewards.append(reward)
+            
+        return rewards
+
+    def _calculate_reward(self, pred, gt):
+        """计算单个样本的奖励"""
+        
+        # 1. 格式验证阶段 (权重: 0.3)
+        format_score = self._validate_format(pred)
+        if format_score == 0:
+            return 0.0  # 格式错误直接返回0
+        
+        # 2. 解析JSON内容
+        pred_list = self._parse_json(pred)
+        gt_list = self._parse_json(gt)
+        
+        if pred_list is None or gt_list is None:
+            return 0.0
+        
+        # 3. 分类准确性评估 (权重: 0.4)
+        classification_score = self._evaluate_classification(pred_list, gt_list)
+        
+        # 4. 时间覆盖度评估 (权重: 0.3)
+        coverage_score = self._evaluate_coverage(pred_list, gt_list)
+        
+        # 5. 组合最终奖励 (确保为正)
+        final_reward = (
+            0.3 * format_score + 
+            0.4 * classification_score + 
+            0.3 * coverage_score
+        )
+        
+        # 确保奖励在[0, 1]范围内
+        final_reward = max(0.0, min(1.0, final_reward))
+        
+        logger.info(f"Reward breakdown: format={format_score:.3f}, "
+                    f"classification={classification_score:.3f}, "
+                    f"coverage={coverage_score:.3f}, "
+                    f"final={final_reward:.3f}")
+        
+        return final_reward
+
+    def _validate_format(self, text):
+        """验证JSON格式 (0-1分)"""
+        try:
+            # 检查是否包含```json```代码块
+            match = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.DOTALL)
+            if not match:
+                return 0.0
+            
+            json_str = match.group(1)
+            # 尝试解析JSON
+            data = json.loads(json_str)
+            if not isinstance(data, list):
+                return 0.0
+            
+            # 检查每个元素的结构
+            for item in data:
+                if not isinstance(item, dict):
+                    return 0.0
+                required_keys = {"category", "start_time_seconds", "end_time_seconds"}
+                if not required_keys.issubset(set(item.keys())):
+                    return 0.0
+                # 检查时间值是否为数字
+                if not (isinstance(item["start_time_seconds"], (int, float)) and 
+                       isinstance(item["end_time_seconds"], (int, float))):
+                    return 0.0
+                # 检查时间逻辑
+                if item["start_time_seconds"] >= item["end_time_seconds"]:
+                    return 0.0
+            
+            return 1.0
+            
+        except Exception:
+            return 0.0
+
+    def _parse_json(self, text):
+        """解析JSON内容"""
+        try:
+            match = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.DOTALL)
+            if not match:
+                return None
+            return json.loads(match.group(1))
+        except Exception:
+            return None
+
+    def _evaluate_classification(self, pred_list, gt_list):
+        """评估分类准确性 (0-1分)"""
+        if not gt_list:
+            return 1.0 if not pred_list else 0.0
+        
+        # 统计分类
+        gt_categories = set(item["category"] for item in gt_list)
+        pred_categories = set(item["category"] for item in pred_list)
+        
+        # 计算精确率和召回率
+        if not pred_categories:
+            precision = 0.0
+            recall = 0.0
+        else:
+            precision = len(gt_categories & pred_categories) / len(pred_categories)
+            recall = len(gt_categories & pred_categories) / len(gt_categories)
+        
+        # 使用F1分数
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * precision * recall / (precision + recall)
+        
+        return f1
+
+    def _evaluate_coverage(self, pred_list, gt_list):
+        """评估时间覆盖度 (0-1分)"""
+        if not gt_list:
+            return 1.0 if not pred_list else 0.0
+        
+        # 按分类分组
+        from collections import defaultdict
+        gt_by_cat = defaultdict(list)
+        pred_by_cat = defaultdict(list)
+        
+        for item in gt_list:
+            gt_by_cat[item["category"]].append(item)
+        for item in pred_list:
+            pred_by_cat[item["category"]].append(item)
+        
+        total_iou = 0.0
+        matched_count = 0
+        
+        # 对每个分类计算IoU
+        for cat in gt_by_cat:
+            if cat not in pred_by_cat:
+                continue
+            
+            gt_items = gt_by_cat[cat]
+            pred_items = pred_by_cat[cat]
+            
+            # 计算最佳匹配的IoU
+            best_iou = 0.0
+            for gt_item in gt_items:
+                gt_start = float(gt_item["start_time_seconds"])
+                gt_end = float(gt_item["end_time_seconds"])
+                
+                for pred_item in pred_items:
+                    try:
+                        p_start = float(pred_item["start_time_seconds"])
+                        p_end = float(pred_item["end_time_seconds"])
+                        
+                        # 计算IoU
+                        inter_start = max(gt_start, p_start)
+                        inter_end = min(gt_end, p_end)
+                        
+                        if inter_start < inter_end:
+                            intersection = inter_end - inter_start
+                            union = (gt_end - gt_start) + (p_end - p_start) - intersection
+                            iou = intersection / union if union > 0 else 0.0
+                            best_iou = max(best_iou, iou)
+                    except Exception:
+                        continue
+            
+            total_iou += best_iou
+            matched_count += 1
+        
+        # 计算平均IoU
+        avg_iou = total_iou / len(gt_by_cat) if gt_by_cat else 0.0
+        
+        return avg_iou
+
+
 # ref implementation: https://github.com/huggingface/open-r1/blob/main/src/open_r1/rewards.py
 class CodeReward(ORM):
 
@@ -707,6 +1178,10 @@ orms['external_math_format'] = MathFormat
 orms['external_countdown'] = CountdownORM
 orms['external_r1v_acc'] = MultiModalAccuracyORM
 orms['external_code_reward'] = CodeReward
+orms['external_r1v_acc_classification'] = MultiModalAccuracyClassificationORM
+orms['external_video_category_iou'] = VideoCategoryIoUReward
+orms['external_video_category_iou_v2'] = VideoCategoryIoUReward_v2
+orms['external_video_category_iou_v3'] = VideoCategoryIoUReward_v3
 orms['external_code_format'] = CodeFormat
 orms['external_code_reward_by_judge0'] = CodeRewardByJudge0
 orms['external_tooluse_format_reward'] = ToolUseFormatReward
