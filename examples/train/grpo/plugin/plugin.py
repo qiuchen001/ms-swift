@@ -1386,3 +1386,356 @@ class CustomCtxManager(ContextManager):
 
 
 context_managers['custom_ctx'] = CustomCtxManager
+
+
+class DrivingVideoClassificationReward(ORM):
+    """
+    汽车驾驶视频多分类任务的奖励函数
+    包含准确率奖励的方差和推理长度奖励
+    """
+    
+    def __init__(self, accuracy_weight=0.7, length_weight=0.3, variance_penalty=0.1):
+        """
+        初始化奖励函数
+        
+        Args:
+            accuracy_weight: 准确率奖励权重
+            length_weight: 推理长度奖励权重  
+            variance_penalty: 准确率方差惩罚系数
+        """
+        self.accuracy_weight = accuracy_weight
+        self.length_weight = length_weight
+        self.variance_penalty = variance_penalty
+        
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        """
+        计算奖励分数
+        
+        Args:
+            completions: 模型输出列表
+            solution: 标准答案列表
+            **kwargs: 其他参数
+            
+        Returns:
+            list[float]: 每个样本的奖励分数
+        """
+        logger.info(f"DrivingVideoClassificationReward completions: {completions}")
+        logger.info(f"DrivingVideoClassificationReward solution: {solution}")
+        
+        rewards = []
+        for completion, gt in zip(completions, solution):
+            # 1. 提取答案部分
+            answer_match = re.search(r'<answer>(.*?)</answer>', completion, re.DOTALL)
+            if not answer_match:
+                rewards.append(0.0)
+                continue
+                
+            predicted_answer = answer_match.group(1).strip()
+            ground_truth = gt.strip()
+            
+            # 2. 解析多分类标签
+            predicted_labels = self._parse_labels(predicted_answer)
+            ground_truth_labels = self._parse_labels(ground_truth)
+            
+            # 3. 计算多分类准确率（F1分数）
+            accuracy_reward = self._calculate_multiclass_accuracy(predicted_labels, ground_truth_labels)
+            
+            # 4. 计算推理长度奖励
+            think_match = re.search(r'<think>(.*?)</think>', completion, re.DOTALL)
+            if think_match:
+                reasoning_text = think_match.group(1).strip()
+                # 计算推理文本长度（字符数）
+                reasoning_length = len(reasoning_text)
+                # 归一化长度奖励（假设理想长度为200-500字符）
+                if reasoning_length < 50:
+                    length_reward = 0.0
+                elif reasoning_length < 200:
+                    length_reward = reasoning_length / 200.0
+                elif reasoning_length <= 500:
+                    length_reward = 1.0
+                else:
+                    # 超过500字符时逐渐减少奖励
+                    length_reward = max(0.0, 1.0 - (reasoning_length - 500) / 300.0)
+            else:
+                length_reward = 0.0
+            
+            # 5. 计算准确率方差惩罚（如果连续预测错误）
+            variance_penalty = 0.0
+            if 'previous_predictions' in kwargs:
+                prev_predictions = kwargs['previous_predictions']
+                if len(prev_predictions) > 0:
+                    # 计算最近几次预测的方差
+                    recent_predictions = prev_predictions[-5:]  # 最近5次预测
+                    if len(recent_predictions) > 1:
+                        # 计算预测准确率的方差
+                        accuracies = [self._calculate_multiclass_accuracy(pred, gt) for pred in recent_predictions]
+                        mean_acc = sum(accuracies) / len(accuracies)
+                        variance = sum((acc - mean_acc) ** 2 for acc in accuracies) / len(accuracies)
+                        variance_penalty = variance * self.variance_penalty
+            
+            # 6. 组合最终奖励
+            final_reward = (
+                self.accuracy_weight * accuracy_reward +
+                self.length_weight * length_reward -
+                variance_penalty
+            )
+            
+            # 确保奖励在[0, 1]范围内
+            final_reward = max(0.0, min(1.0, final_reward))
+            
+            rewards.append(final_reward)
+            
+        return rewards
+    
+    def _parse_labels(self, label_str: str) -> set:
+        """
+        解析标签字符串为标签集合
+        
+        Args:
+            label_str: 标签字符串，可以是逗号分隔的多个标签
+            
+        Returns:
+            set: 标签集合
+        """
+        if not label_str:
+            return set()
+        
+        # 分割标签并清理
+        labels = [label.strip() for label in label_str.split(',')]
+        # 过滤空标签
+        labels = [label for label in labels if label]
+        return set(labels)
+    
+    def _calculate_multiclass_accuracy(self, predicted_labels: set, ground_truth_labels: set) -> float:
+        """
+        计算多分类准确率（使用F1分数）
+        
+        Args:
+            predicted_labels: 预测标签集合
+            ground_truth_labels: 真实标签集合
+            
+        Returns:
+            float: F1分数 (0-1)
+        """
+        if not ground_truth_labels:
+            return 1.0 if not predicted_labels else 0.0
+        
+        if not predicted_labels:
+            return 0.0
+        
+        # 计算精确率和召回率
+        intersection = predicted_labels & ground_truth_labels
+        precision = len(intersection) / len(predicted_labels) if predicted_labels else 0.0
+        recall = len(intersection) / len(ground_truth_labels) if ground_truth_labels else 0.0
+        
+        # 计算F1分数
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * precision * recall / (precision + recall)
+        
+        return f1
+
+
+class DrivingVideoClassificationRewardV2(ORM):
+    """
+    改进版汽车驾驶视频多分类奖励函数
+    增加更细致的奖励计算和错误分析
+    """
+    
+    def __init__(self, accuracy_weight=0.6, length_weight=0.2, format_weight=0.2):
+        """
+        初始化奖励函数
+        
+        Args:
+            accuracy_weight: 准确率奖励权重
+            length_weight: 推理长度奖励权重
+            format_weight: 格式正确性奖励权重
+        """
+        self.accuracy_weight = accuracy_weight
+        self.length_weight = length_weight
+        self.format_weight = format_weight
+        
+        # 定义有效的分类标签
+        self.valid_categories = {
+            '白天驾驶', 'Day Driving', 'day driving',
+            '夜间驾驶', 'Night Driving', 'night driving', 
+            '城市道路', 'Urban Road', 'urban road',
+            '高速公路', 'Highway', 'highway',
+            '乡村道路', 'Rural Road', 'rural road',
+            '雨天驾驶', 'Rainy Driving', 'rainy driving',
+            '雪天驾驶', 'Snowy Driving', 'snowy driving',
+            '拥堵交通', 'Traffic Jam', 'traffic jam',
+            '停车场景', 'Parking', 'parking',
+            '其他', 'Other', 'other'
+        }
+        
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        """
+        计算奖励分数
+        
+        Args:
+            completions: 模型输出列表
+            solution: 标准答案列表
+            **kwargs: 其他参数
+            
+        Returns:
+            list[float]: 每个样本的奖励分数
+        """
+        logger.info(f"DrivingVideoClassificationRewardV2 completions: {completions}")
+        logger.info(f"DrivingVideoClassificationRewardV2 solution: {solution}")
+        
+        rewards = []
+        for completion, gt in zip(completions, solution):
+            # 1. 格式检查
+            format_score = self._check_format(completion)
+            
+            # 2. 提取答案
+            answer_match = re.search(r'<answer>(.*?)</answer>', completion, re.DOTALL)
+            if not answer_match:
+                rewards.append(0.0)
+                continue
+                
+            predicted_answer = answer_match.group(1).strip()
+            ground_truth = gt.strip()
+            
+            # 3. 解析多分类标签
+            predicted_labels = self._parse_labels(predicted_answer)
+            ground_truth_labels = self._parse_labels(ground_truth)
+            
+            # 4. 多分类准确率计算
+            accuracy_score = self._calculate_multiclass_accuracy(predicted_labels, ground_truth_labels)
+            
+            # 5. 推理长度计算
+            length_score = self._calculate_length_score(completion)
+            
+            # 6. 组合最终奖励
+            final_reward = (
+                self.accuracy_weight * accuracy_score +
+                self.length_weight * length_score +
+                self.format_weight * format_score
+            )
+            
+            # 确保奖励在[0, 1]范围内
+            final_reward = max(0.0, min(1.0, final_reward))
+            
+            rewards.append(final_reward)
+            
+        return rewards
+    
+    def _parse_labels(self, label_str: str) -> set:
+        """
+        解析标签字符串为标签集合
+        
+        Args:
+            label_str: 标签字符串，可以是逗号分隔的多个标签
+            
+        Returns:
+            set: 标签集合
+        """
+        if not label_str:
+            return set()
+        
+        # 分割标签并清理
+        labels = [label.strip() for label in label_str.split(',')]
+        # 过滤空标签
+        labels = [label for label in labels if label]
+        return set(labels)
+    
+    def _calculate_multiclass_accuracy(self, predicted_labels: set, ground_truth_labels: set) -> float:
+        """
+        计算多分类准确率（使用F1分数）
+        
+        Args:
+            predicted_labels: 预测标签集合
+            ground_truth_labels: 真实标签集合
+            
+        Returns:
+            float: F1分数 (0-1)
+        """
+        if not ground_truth_labels:
+            return 1.0 if not predicted_labels else 0.0
+        
+        if not predicted_labels:
+            return 0.0
+        
+        # 计算精确率和召回率
+        intersection = predicted_labels & ground_truth_labels
+        precision = len(intersection) / len(predicted_labels) if predicted_labels else 0.0
+        recall = len(intersection) / len(ground_truth_labels) if ground_truth_labels else 0.0
+        
+        # 计算F1分数
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * precision * recall / (precision + recall)
+        
+        return f1
+    
+    def _check_format(self, completion: str) -> float:
+        """
+        检查输出格式是否正确
+        
+        Args:
+            completion: 模型输出
+            
+        Returns:
+            float: 格式分数 (0-1)
+        """
+        # 检查是否包含必要的标签
+        has_think = '<think>' in completion and '</think>' in completion
+        has_answer = '<answer>' in completion and '</answer>' in completion
+        
+        if not (has_think and has_answer):
+            return 0.0
+            
+        # 检查标签顺序
+        think_start = completion.find('<think>')
+        think_end = completion.find('</think>')
+        answer_start = completion.find('<answer>')
+        answer_end = completion.find('</answer>')
+        
+        if not (think_start < think_end < answer_start < answer_end):
+            return 0.0
+            
+        # 检查内容是否为空
+        think_content = completion[think_start + 7:think_end].strip()
+        answer_content = completion[answer_start + 8:answer_end].strip()
+        
+        if not think_content or not answer_content:
+            return 0.5
+            
+        return 1.0
+    
+    def _calculate_length_score(self, completion: str) -> float:
+        """
+        计算推理长度分数
+        
+        Args:
+            completion: 模型输出
+            
+        Returns:
+            float: 长度分数 (0-1)
+        """
+        think_match = re.search(r'<think>(.*?)</think>', completion, re.DOTALL)
+        if not think_match:
+            return 0.0
+            
+        reasoning_text = think_match.group(1).strip()
+        reasoning_length = len(reasoning_text)
+        
+        # 理想长度范围：100-400字符
+        if reasoning_length < 50:
+            return 0.0
+        elif reasoning_length < 100:
+            return reasoning_length / 100.0
+        elif reasoning_length <= 400:
+            return 1.0
+        else:
+            # 超过400字符时逐渐减少奖励
+            return max(0.0, 1.0 - (reasoning_length - 400) / 200.0)
+
+
+# 注册新的奖励函数
+orms['driving_video_classification_reward'] = DrivingVideoClassificationReward
+orms['driving_video_classification_reward_v2'] = DrivingVideoClassificationRewardV2
