@@ -153,6 +153,10 @@ class MultiModalAccuracyORM(ORM):
         Returns:
             list[float]: Reward scores
         """
+
+        logger.info(f"MultiModalAccuracyORM completions: {completions}")
+        logger.info(f"MultiModalAccuracyORM solution: {solution}")
+
         rewards = []
         from math_verify import parse, verify
         for content, sol in zip(completions, solution):
@@ -1423,6 +1427,7 @@ class DrivingVideoClassificationReward(ORM):
         logger.info(f"DrivingVideoClassificationReward solution: {solution}")
         
         rewards = []
+        compared_labels_list = []
         for completion, gt in zip(completions, solution):
             # 1. 提取答案部分
             answer_match = re.search(r'<answer>(.*?)</answer>', completion, re.DOTALL)
@@ -1436,6 +1441,12 @@ class DrivingVideoClassificationReward(ORM):
             # 2. 解析多分类标签
             predicted_labels = self._parse_labels(predicted_answer)
             ground_truth_labels = self._parse_labels(ground_truth)
+
+            compared_labels = {
+                "predicted_labels": list(predicted_labels),
+                "ground_truth_labels": list(ground_truth_labels)
+            }
+            compared_labels_list.append(compared_labels)
             
             # 3. 计算多分类准确率（F1分数）
             accuracy_reward = self._calculate_multiclass_accuracy(predicted_labels, ground_truth_labels)
@@ -1484,6 +1495,8 @@ class DrivingVideoClassificationReward(ORM):
             final_reward = max(0.0, min(1.0, final_reward))
             
             rewards.append(final_reward)
+
+        logger.info(f"DrivingVideoClassificationReward labels compare: {compared_labels_list}")
             
         return rewards
     
