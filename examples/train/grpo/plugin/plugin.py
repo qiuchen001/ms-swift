@@ -1395,21 +1395,21 @@ context_managers['custom_ctx'] = CustomCtxManager
 class DrivingVideoClassificationReward(ORM):
     """
     汽车驾驶视频多分类任务的奖励函数
-    包含准确率奖励的方差和推理长度奖励
+    包含增强的准确率奖励和推理长度奖励
     """
     
-    def __init__(self, accuracy_weight=0.7, length_weight=0.3, variance_penalty=0.1):
+    def __init__(self, accuracy_weight=0.8, length_weight=0.2, accuracy_enhancement_power=2.0):
         """
         初始化奖励函数
         
         Args:
             accuracy_weight: 准确率奖励权重
             length_weight: 推理长度奖励权重  
-            variance_penalty: 准确率方差惩罚系数
+            accuracy_enhancement_power: 准确率奖励增强幂次，用于增强准确率信号
         """
         self.accuracy_weight = accuracy_weight
         self.length_weight = length_weight
-        self.variance_penalty = variance_penalty
+        self.accuracy_enhancement_power = accuracy_enhancement_power
         
     def __call__(self, completions, solution, **kwargs) -> List[float]:
         """
@@ -1448,8 +1448,14 @@ class DrivingVideoClassificationReward(ORM):
             }
             compared_labels_list.append(compared_labels)
             
-            # 3. 计算多分类准确率（F1分数）
+            # 3. 计算多分类准确率（F1分数）并增强准确率信号
             accuracy_reward = self._calculate_multiclass_accuracy(predicted_labels, ground_truth_labels)
+            # 使用幂次变换增强准确率奖励的方差
+            # 当 accuracy_enhancement_power=2.0 时：
+            # 当 accuracy_reward=0.8 时，enhanced_accuracy_reward=0.8^0.5=0.894
+            # 当 accuracy_reward=0.9 时，enhanced_accuracy_reward=0.9^0.5=0.949
+            # 这样可以让高准确率获得更高的奖励，低准确率获得更低的奖励
+            enhanced_accuracy_reward = accuracy_reward ** (1.0 / self.accuracy_enhancement_power)
             
             # 4. 计算推理长度奖励
             think_match = re.search(r'<think>(.*?)</think>', completion, re.DOTALL)
@@ -1470,25 +1476,10 @@ class DrivingVideoClassificationReward(ORM):
             else:
                 length_reward = 0.0
             
-            # 5. 计算准确率方差惩罚（如果连续预测错误）
-            variance_penalty = 0.0
-            if 'previous_predictions' in kwargs:
-                prev_predictions = kwargs['previous_predictions']
-                if len(prev_predictions) > 0:
-                    # 计算最近几次预测的方差
-                    recent_predictions = prev_predictions[-5:]  # 最近5次预测
-                    if len(recent_predictions) > 1:
-                        # 计算预测准确率的方差
-                        accuracies = [self._calculate_multiclass_accuracy(pred, gt) for pred in recent_predictions]
-                        mean_acc = sum(accuracies) / len(accuracies)
-                        variance = sum((acc - mean_acc) ** 2 for acc in accuracies) / len(accuracies)
-                        variance_penalty = variance * self.variance_penalty
-            
-            # 6. 组合最终奖励
+            # 5. 组合最终奖励（移除方差惩罚，增强准确率信号）
             final_reward = (
-                self.accuracy_weight * accuracy_reward +
-                self.length_weight * length_reward -
-                variance_penalty
+                self.accuracy_weight * enhanced_accuracy_reward +
+                self.length_weight * length_reward
             )
             
             # 确保奖励在[0, 1]范围内
@@ -1553,10 +1544,10 @@ class DrivingVideoClassificationReward(ORM):
 class DrivingVideoClassificationRewardV2(ORM):
     """
     改进版汽车驾驶视频多分类奖励函数
-    增加更细致的奖励计算和错误分析
+    增加更细致的奖励计算和错误分析，并增强准确率信号
     """
     
-    def __init__(self, accuracy_weight=0.6, length_weight=0.2, format_weight=0.2):
+    def __init__(self, accuracy_weight=0.7, length_weight=0.15, format_weight=0.15, accuracy_enhancement_power=2.0):
         """
         初始化奖励函数
         
@@ -1564,10 +1555,12 @@ class DrivingVideoClassificationRewardV2(ORM):
             accuracy_weight: 准确率奖励权重
             length_weight: 推理长度奖励权重
             format_weight: 格式正确性奖励权重
+            accuracy_enhancement_power: 准确率奖励增强幂次，用于增强准确率信号
         """
         self.accuracy_weight = accuracy_weight
         self.length_weight = length_weight
         self.format_weight = format_weight
+        self.accuracy_enhancement_power = accuracy_enhancement_power
         
         # 定义有效的分类标签
         self.valid_categories = {
@@ -1616,15 +1609,21 @@ class DrivingVideoClassificationRewardV2(ORM):
             predicted_labels = self._parse_labels(predicted_answer)
             ground_truth_labels = self._parse_labels(ground_truth)
             
-            # 4. 多分类准确率计算
+            # 4. 多分类准确率计算并增强准确率信号
             accuracy_score = self._calculate_multiclass_accuracy(predicted_labels, ground_truth_labels)
+            # 使用幂次变换增强准确率奖励的方差
+            # 当 accuracy_enhancement_power=2.0 时：
+            # 当 accuracy_score=0.8 时，enhanced_accuracy_score=0.8^0.5=0.894
+            # 当 accuracy_score=0.9 时，enhanced_accuracy_score=0.9^0.5=0.949
+            # 这样可以让高准确率获得更高的奖励，低准确率获得更低的奖励
+            enhanced_accuracy_score = accuracy_score ** (1.0 / self.accuracy_enhancement_power)
             
             # 5. 推理长度计算
             length_score = self._calculate_length_score(completion)
             
             # 6. 组合最终奖励
             final_reward = (
-                self.accuracy_weight * accuracy_score +
+                self.accuracy_weight * enhanced_accuracy_score +
                 self.length_weight * length_score +
                 self.format_weight * format_score
             )
