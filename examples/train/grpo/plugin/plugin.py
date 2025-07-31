@@ -1430,13 +1430,14 @@ class DrivingVideoClassificationReward(ORM):
         compared_labels_list = []
         for completion, gt in zip(completions, solution):
             # 1. 提取答案部分
-            answer_match = re.search(r'<answer>(.*?)</answer>', completion, re.DOTALL)
-            if not answer_match:
+            gt_match = re.search(r'<answer>(.*?)</answer>', gt)
+            ground_truth = gt_match.group(1).strip() if gt_match else gt.strip()
+
+            completion_match = re.search(r'<answer>(.*?)</answer>', completion)
+            if not completion_match:
                 rewards.append(0.0)
                 continue
-                
-            predicted_answer = answer_match.group(1).strip()
-            ground_truth = gt.strip()
+            predicted_answer = completion_match.group(1).strip()
             
             # 2. 解析多分类标签
             predicted_labels = self._parse_labels(predicted_answer)
@@ -1450,6 +1451,9 @@ class DrivingVideoClassificationReward(ORM):
             
             # 3. 计算多分类准确率（F1分数）并增强准确率信号
             accuracy_reward = self._calculate_multiclass_accuracy(predicted_labels, ground_truth_labels)
+            if accuracy_reward == 0.0:
+                rewards.append(0.0)
+                continue
             # 使用幂次变换增强准确率奖励的方差
             # 当 accuracy_enhancement_power=2.0 时：
             # 当 accuracy_reward=0.8 时，enhanced_accuracy_reward=0.8^0.5=0.894
