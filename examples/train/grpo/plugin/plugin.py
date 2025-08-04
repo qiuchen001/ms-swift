@@ -1794,11 +1794,7 @@ class DrivingVideoClassificationNoThinkReward(ORM):
             gt_match = re.search(r'<answer>(.*?)</answer>', gt)
             ground_truth = gt_match.group(1).strip() if gt_match else gt.strip()
 
-            completion_match = re.search(r'<answer>(.*?)</answer>', completion)
-            if not completion_match:
-                rewards.append(0.0)
-                continue
-            predicted_answer = completion_match.group(1).strip()
+            predicted_answer = completion.strip()
 
             # 2. 解析多分类标签
             predicted_labels = self._parse_labels(predicted_answer)
