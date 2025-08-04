@@ -1822,6 +1822,9 @@ class DrivingVideoClassificationNoThinkReward(ORM):
             # 当 accuracy_reward=0.9 时，enhanced_accuracy_reward=0.9^0.5=0.949
             # 这样可以让高准确率获得更高的奖励，低准确率获得更低的奖励
             final_reward = accuracy_reward ** (1.0 / self.accuracy_enhancement_power)
+            
+            # 确保奖励在[0, 1]范围内
+            final_reward = max(0.0, min(1.0, final_reward))
 
             rewards.append(final_reward)
 
