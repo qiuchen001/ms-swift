@@ -1492,6 +1492,7 @@ class DrivingVideoClassificationReward(ORM):
             rewards.append(final_reward)
 
         logger.info(f"DrivingVideoClassificationReward labels compare: {compared_labels_list}")
+        logger.info(f"DrivingVideoClassificationReward rewards: {rewards}")
             
         return rewards
     
@@ -1752,6 +1753,134 @@ class DrivingVideoClassificationRewardV2(ORM):
             return max(0.0, 1.0 - (reasoning_length - 400) / 200.0)
 
 
+class DrivingVideoClassificationNoThinkReward(ORM):
+    """
+    汽车驾驶视频多分类任务的奖励函数
+    包含增强的准确率奖励和推理长度奖励
+    """
+
+    def __init__(self, accuracy_weight=0.8, length_weight=0.2, accuracy_enhancement_power=2.0):
+        """
+        初始化奖励函数
+
+        Args:
+            accuracy_weight: 准确率奖励权重
+            length_weight: 推理长度奖励权重
+            accuracy_enhancement_power: 准确率奖励增强幂次，用于增强准确率信号
+        """
+        self.accuracy_weight = accuracy_weight
+        self.length_weight = length_weight
+        self.accuracy_enhancement_power = accuracy_enhancement_power
+
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        """
+        计算奖励分数
+
+        Args:
+            completions: 模型输出列表
+            solution: 标准答案列表
+            **kwargs: 其他参数
+
+        Returns:
+            list[float]: 每个样本的奖励分数
+        """
+        logger.info(f"DrivingVideoClassificationNoThinkReward completions: {completions}")
+        logger.info(f"DrivingVideoClassificationNoThinkReward solution: {solution}")
+
+        rewards = []
+        compared_labels_list = []
+        for completion, gt in zip(completions, solution):
+            # 1. 提取答案部分
+            gt_match = re.search(r'<answer>(.*?)</answer>', gt)
+            ground_truth = gt_match.group(1).strip() if gt_match else gt.strip()
+
+            completion_match = re.search(r'<answer>(.*?)</answer>', completion)
+            if not completion_match:
+                rewards.append(0.0)
+                continue
+            predicted_answer = completion_match.group(1).strip()
+
+            # 2. 解析多分类标签
+            predicted_labels = self._parse_labels(predicted_answer)
+            ground_truth_labels = self._parse_labels(ground_truth)
+
+            compared_labels = {
+                "predicted_labels": list(predicted_labels),
+                "ground_truth_labels": list(ground_truth_labels)
+            }
+            compared_labels_list.append(compared_labels)
+
+            # 3. 计算多分类准确率（F1分数）并增强准确率信号
+            accuracy_reward = self._calculate_multiclass_accuracy(predicted_labels, ground_truth_labels)
+            accuracy_reward = accuracy_reward * len(ground_truth_labels)
+            if accuracy_reward == 0.0:
+                rewards.append(0.0)
+                continue
+            # 使用幂次变换增强准确率奖励的方差
+            # 当 accuracy_enhancement_power=2.0 时：
+            # 当 accuracy_reward=0.8 时，enhanced_accuracy_reward=0.8^0.5=0.894
+            # 当 accuracy_reward=0.9 时，enhanced_accuracy_reward=0.9^0.5=0.949
+            # 这样可以让高准确率获得更高的奖励，低准确率获得更低的奖励
+            final_reward = accuracy_reward ** (1.0 / self.accuracy_enhancement_power)
+
+            rewards.append(final_reward)
+
+        logger.info(f"DrivingVideoClassificationNoThinkReward labels compare: {compared_labels_list}")
+        logger.info(f"DrivingVideoClassificationNoThinkReward rewards: {rewards}")
+
+        return rewards
+
+    def _parse_labels(self, label_str: str) -> set:
+        """
+        解析标签字符串为标签集合
+
+        Args:
+            label_str: 标签字符串，可以是逗号分隔的多个标签
+
+        Returns:
+            set: 标签集合
+        """
+        if not label_str:
+            return set()
+
+        # 分割标签并清理
+        labels = [label.strip() for label in label_str.split(',')]
+        # 过滤空标签
+        labels = [label for label in labels if label]
+        return set(labels)
+
+    def _calculate_multiclass_accuracy(self, predicted_labels: set, ground_truth_labels: set) -> float:
+        """
+        计算多分类准确率（使用F1分数）
+
+        Args:
+            predicted_labels: 预测标签集合
+            ground_truth_labels: 真实标签集合
+
+        Returns:
+            float: F1分数 (0-1)
+        """
+        if not ground_truth_labels:
+            return 1.0 if not predicted_labels else 0.0
+
+        if not predicted_labels:
+            return 0.0
+
+        # 计算精确率和召回率
+        intersection = predicted_labels & ground_truth_labels
+        precision = len(intersection) / len(predicted_labels) if predicted_labels else 0.0
+        recall = len(intersection) / len(ground_truth_labels) if ground_truth_labels else 0.0
+
+        # 计算F1分数
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * precision * recall / (precision + recall)
+
+        return f1
+
+
 # 注册新的奖励函数
 orms['driving_video_classification_reward'] = DrivingVideoClassificationReward
 orms['driving_video_classification_reward_v2'] = DrivingVideoClassificationRewardV2
+orms['driving_video_classification_reward_no_think'] = DrivingVideoClassificationNoThinkReward
