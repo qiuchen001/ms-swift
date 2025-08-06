@@ -1794,7 +1794,11 @@ class DrivingVideoClassificationNoThinkReward(ORM):
             gt_match = re.search(r'<answer>(.*?)</answer>', gt)
             ground_truth = gt_match.group(1).strip() if gt_match else gt.strip()
 
-            predicted_answer = completion.strip()
+            completion_match = re.search(r'<answer>(.*?)</answer>', completion)
+            if not completion_match:
+                rewards.append(0.0)
+                continue
+            predicted_answer = completion_match.group(1).strip()
 
             # 2. 解析多分类标签
             predicted_labels = self._parse_labels(predicted_answer)
@@ -1820,7 +1824,7 @@ class DrivingVideoClassificationNoThinkReward(ORM):
             final_reward = accuracy_reward ** (1.0 / self.accuracy_enhancement_power)
             
             # 确保奖励在[0, 1]范围内
-            final_reward = max(0.0, min(1.0, final_reward))
+            # final_reward = max(0.0, min(1.0, final_reward))
 
             rewards.append(final_reward)
 
