@@ -1883,7 +1883,94 @@ class DrivingVideoClassificationNoThinkReward(ORM):
         return f1
 
 
+class DrivingVideoMultiClassificationReward(ORM):
+    """
+    汽车驾驶视频多分类任务的奖励函数，支持多标签分类，每个标签之间用逗号分隔
+    """
+
+    def __init__(self):
+        pass
+
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        """
+        计算奖励分数
+
+        Args:
+            completions: 模型输出列表
+            solution: 标准答案列表
+            **kwargs: 其他参数
+
+        Returns:
+            list[float]: 每个样本的奖励分数
+        """
+
+        rewards = []
+        compared_labels_list = []
+        for completion, gt in zip(completions, solution):
+            # 1. 提取答案部分
+            gt_match = re.search(r'<answer>(.*?)</answer>', gt)
+            ground_truth = gt_match.group(1).strip() if gt_match else gt.strip()
+
+            completion_match = re.search(r'<answer>(.*?)</answer>', completion)
+            if not completion_match:
+                rewards.append(0.0)
+                continue
+            predicted_answer = completion_match.group(1).strip()
+
+            # 2. 解析多分类标签
+            predicted_labels = self._parse_labels(predicted_answer)
+            ground_truth_labels = self._parse_labels(ground_truth)
+
+            compared_labels = {
+                "predicted_labels": list(predicted_labels),
+                "ground_truth_labels": list(ground_truth_labels)
+            }
+            compared_labels_list.append(compared_labels)
+
+            # Check if student answer is a subset of correct answers
+            if predicted_labels.issubset(ground_truth_labels):
+                # Calculate partial credit: number of correct answers / total number of correct answers
+                reward = len(predicted_labels) / len(ground_truth_labels)
+            else:
+                reward = 0.0
+
+
+            rewards.append(reward)
+
+        logger.info(f"completions: {completions}")
+        logger.info(f"solution: {solution}")
+        video_path = kwargs.get("videos", None)
+        if not video_path:
+            logger.warning(f"kwargs: {kwargs}")
+
+        logger.info(f"video_path: {video_path}")
+        logger.info(f"labels compare: {compared_labels_list}")
+        logger.info(f"rewards: {rewards}")
+
+        return rewards
+
+    def _parse_labels(self, label_str: str) -> set:
+        """
+        解析标签字符串为标签集合
+
+        Args:
+            label_str: 标签字符串，可以是逗号分隔的多个标签
+
+        Returns:
+            set: 标签集合
+        """
+        if not label_str:
+            return set()
+
+        # 分割标签并清理
+        labels = [label.strip() for label in label_str.split(',')]
+        # 过滤空标签
+        labels = [label for label in labels if label]
+        return set(labels)
+
+
 # 注册新的奖励函数
 orms['driving_video_classification_reward'] = DrivingVideoClassificationReward
 orms['driving_video_classification_reward_v2'] = DrivingVideoClassificationRewardV2
 orms['driving_video_classification_reward_no_think'] = DrivingVideoClassificationNoThinkReward
+orms['driving_video_multi_classification_reward'] = DrivingVideoMultiClassificationReward
